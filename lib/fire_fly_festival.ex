@@ -2,15 +2,15 @@ defmodule FireFlyFestival do
 # Declaring constants below which
 # These can be used to configure the required parameters
 # asked in the assignment
-  @firefly_count 10 #10 fireflies
+  @firefly_count 3 #10 fireflies
   @on_time 500 # 500ms = 0.5sec
   @off_time 2000 # 2000ms = 2sec
   @update_time 100 # 100ms = 0.1sec internal update clock
-  @adjustment_time 1000 #1000ms = 1sec max adjustment time
+  @adjustment_time 0 #1000ms = 1sec max adjustment time
   @output_frequency 30 # 30 times per second
   @clear_screen IO.ANSI.home() <> IO.ANSI.clear() # Helps to clear screen for each line print
   @on_display_char "B" # Display this when on state
-  @off_display_char " " # Display this when off state
+  @off_display_char "." # Display this when off state
 
   def start do
     IO.puts("Starting the Firefly Festival.")
@@ -18,11 +18,11 @@ defmodule FireFlyFestival do
     # To generate a random seed 
     # for different behavior on each run
     :rand.seed(:exsplus, :os.timestamp())
-
+    self_pid = self()
     # Enumerating the range to spawn required firefly processes
     firefly_pids = Enum.map(0..(@firefly_count - 1), fn fly_num -> 
-      start_delay = :rand.uniform(@off_time) # Picking random delay 
-      spawn_link(fn -> firefly(fly_num, :off, start_delay) end) # Spawning fireflies
+      start_delay = @off_time # Picking random delay 
+      spawn_link(fn -> firefly(fly_num, :off, start_delay, self_pid) end) # Spawning fireflies
     end)
 
     # Traversing the PIDs of the fireflies
@@ -30,7 +30,8 @@ defmodule FireFlyFestival do
     Enum.each(Enum.with_index(firefly_pids), fn {pid, index} -> 
       right_fly = if (index == @firefly_count - 1), do: 0, else: index + 1
       right_pid = Enum.at(firefly_pids, right_fly)
-      send(pid, {:init, right_pid, self()})
+      if index == 2 do Process.send_after(pid, {:setright, right_pid}, 10000) 
+      else send(pid, {:setright, right_pid}) end
     end)
 
     # Start displaying the fireflies behavior
@@ -39,10 +40,8 @@ defmodule FireFlyFestival do
 
   # When a firefly gets the init message
   # we fill its details and start it's action
-  defp firefly(fly_num, state, start_delay) do
-    receive do
-      {:init, right_pid, parent_pid} -> firefly_action(fly_num, state, start_delay, right_pid, parent_pid)
-    end
+  defp firefly(fly_num, state, start_delay, parent_pid) do
+      firefly_action(fly_num, state, start_delay, nil, parent_pid)
   end
 
   # This is called after firefly action is initialized
@@ -51,7 +50,7 @@ defmodule FireFlyFestival do
   # whether it has to tick or blink
   defp firefly_action(fly_num, state, time_left, right_pid, parent_pid) do
     Process.send_after(self(), :tick, @update_time) # Each tick (10 per second default)
-    send(parent_pid, {:state, fly_num, state}) # Sending our state to parent for printing
+    # send(parent_pid, {:state, fly_num, state}) # Sending our state to parent for printing
 
     # Receives actions and performs actions continuously
     receive do
@@ -61,10 +60,12 @@ defmodule FireFlyFestival do
         cond do
         # If state was off and timer is finished we set state to on
           state == :off and current_time_left <= 0 ->
-            send(right_pid, :blink) # We also signal right firefly to blink earlier
+            if right_pid != nil, do: send(right_pid, :blink) # We also signal right firefly to blink earlier
+            send(parent_pid, {:state, fly_num, :on})
             firefly_action(fly_num, :on, @on_time, right_pid, parent_pid)
-        # If state was on and timer is finished we set state to off
+                    # If state was on and timer is finished we set state to off
           state == :on and current_time_left <= 0 -> 
+            send(parent_pid, {:state, fly_num, :off})
             firefly_action(fly_num, :off, @off_time, right_pid, parent_pid)
         #Fallback for other cases - no state update only time updated
           true ->
@@ -82,11 +83,15 @@ defmodule FireFlyFestival do
           end
 
         firefly_action(fly_num, state, current_time_left, right_pid, parent_pid)
+
+      {:setright, right_pid_rcvd} ->
+        firefly_action(fly_num, state, time_left, right_pid_rcvd, parent_pid)
     end
   end
 
   # Display handler that receives state updates
   defp display_festival(states, fly_count) do
+    display(states, fly_count)
     receive do
       {:state, fly_num, state} -> # Received a state from Firefly #fly_num
         updated_states = Map.put(states, fly_num, state) # Updating the state
@@ -94,15 +99,18 @@ defmodule FireFlyFestival do
           # If all states received then display the states
           display(updated_states, fly_count)
           :timer.sleep(div(1000, @output_frequency)) # Wait for next frame based on output frequency param
-          display_festival(%{}, fly_count) # Reset the states
+          display_festival(updated_states, fly_count) # Reset the states
         else
           display_festival(updated_states, fly_count) # Keep waiting if not all flies updated
         end
+      after 
+        div(1000, @output_frequency) ->
+          display_festival(states, fly_count)
     end
   end
 
   defp display(states, fly_count) do
-    IO.write(@clear_screen) #Clearing screen for displayin next set of states
+    #IO.write(@clear_screen) #Clearing screen for displayin next set of states
     to_display_line = # Iterate over all the states to get the state to display for each fly (on or off)
       0..(fly_count - 1)
       |> Enum.map(fn fly_num -> if states[fly_num] == :on, do: @on_display_char, else: @off_display_char end) 
